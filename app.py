@@ -161,10 +161,12 @@ if uploaded_file:
         if st.button("Przetłumacz plik"):
             translated_cells = [None] * (df.shape[0] * df.shape[1])
             for i, chunk in enumerate(chunks):
-            with st.spinner(f"Tłumaczenie części {i + 1} z {len(chunks)}..."):
-                content = "
+                with st.spinner(f"Tłumaczenie części {i + 1} z {len(chunks)}..."):
+                    content = "
 ".join(l for _, l in chunk)
-                prompt = f"Przetłumacz na język {target_lang}. Zwróć każdą linię w oryginalnej kolejności, bez numeracji.
+                    prompt = f"Przetłumacz na język {target_lang}. Zwróć każdą linię w oryginalnej kolejności, bez numeracji.
+
+{content}"
 
 {content}"
 
