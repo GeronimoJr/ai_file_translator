@@ -24,7 +24,6 @@ To narzędzie umożliwia tłumaczenie zawartości plików CSV, XML, XLS, XLSX, D
 Prześlij plik, wybierz język docelowy oraz model.
 """)
 
-# --- Uwierzytelnianie ---
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
@@ -38,13 +37,11 @@ if not st.session_state.authenticated:
             st.error("Nieprawidłowy login lub hasło")
     st.stop()
 
-# --- Stan aplikacji ---
 if "translated_text" not in st.session_state:
     st.session_state.translated_text = None
 if "output_bytes" not in st.session_state:
     st.session_state.output_bytes = None
 
-# --- Konfiguracja Google Drive ---
 drive_folder_id = st.secrets.get("GOOGLE_DRIVE_FOLDER_ID")
 service_account_json = st.secrets.get("GOOGLE_DRIVE_CREDENTIALS_JSON")
 
@@ -90,7 +87,6 @@ def insert_translations_into_xml(elem, translations, path=""):
         child_path = f"{path}/{child.tag}[{i}]"
         insert_translations_into_xml(child, translations, child_path)
 
-# --- Główna logika ---
 if uploaded_file:
     file_type = uploaded_file.name.split(".")[-1].lower()
     raw_bytes = uploaded_file.read()
@@ -122,10 +118,20 @@ if uploaded_file:
             else:
                 st.error("Nie udało się odczytać pliku CSV – nieznane kodowanie.")
                 st.stop()
-            lines = df.astype(str).values.flatten().tolist()
+            lines = []
+            cell_indices = []
+            for row_idx, row in df.iterrows():
+                for col_idx, cell in enumerate(row):
+                    lines.append(str(cell))
+                    cell_indices.append((row_idx, df.columns[col_idx]))
         elif file_type in ["xls", "xlsx"]:
             df = pd.read_excel(io.BytesIO(raw_bytes))
-            lines = df.astype(str).values.flatten().tolist()
+            lines = []
+            cell_indices = []
+            for row_idx, row in df.iterrows():
+                for col_idx, cell in enumerate(row):
+                    lines.append(str(cell))
+                    cell_indices.append((row_idx, df.columns[col_idx]))
         elif file_type in ["doc", "docx"]:
             doc = Document(io.BytesIO(raw_bytes))
             lines = [p.text for p in doc.paragraphs if p.text.strip()]
@@ -141,7 +147,7 @@ if uploaded_file:
             if current_tokens + token_len > chunk_size:
                 chunks.append(current_chunk)
                 current_chunk, current_tokens = [], 0
-            current_chunk.append((keys[i] if file_type == "xml" else i, line))
+            current_chunk.append((i, line))
             current_tokens += token_len
         if current_chunk:
             chunks.append(current_chunk)
@@ -159,7 +165,7 @@ if uploaded_file:
         st.info(f"Szacunkowy koszt tłumaczenia: ~${cost_total:.4f} USD")
 
         if st.button("Przetłumacz plik"):
-            translated_cells = [None] * (df.shape[0] * df.shape[1])
+            translated_cells = [None] * len(lines)
             for i, chunk in enumerate(chunks):
                 with st.spinner(f"Tłumaczenie części {i + 1} z {len(chunks)}..."):
                     content = "\n".join(l for _, l in chunk)
@@ -177,18 +183,20 @@ if uploaded_file:
             with tempfile.TemporaryDirectory() as tmpdir:
                 output_path = os.path.join(tmpdir, f"output.{file_type}")
                 if file_type == "xml":
+                    translated_map = dict(zip(keys, translated_cells))
                     insert_translations_into_xml(root, translated_map)
                     tree.write(output_path, encoding="utf-8", xml_declaration=True)
                 elif file_type in ["csv", "xls", "xlsx"]:
-                    reshaped = np.array(translated_cells).reshape(df.shape)
-                    df_out = pd.DataFrame(reshaped, columns=df.columns)
+                    translated_df = df.copy()
+                    for (row_idx, col_name), translated in zip(cell_indices, translated_cells):
+                        translated_df.at[row_idx, col_name] = translated
                     if file_type == "csv":
-                        df_out.to_csv(output_path, index=False)
+                        translated_df.to_csv(output_path, index=False)
                     else:
-                        df_out.to_excel(output_path, index=False)
+                        translated_df.to_excel(output_path, index=False)
                 elif file_type in ["doc", "docx"]:
                     new_doc = Document()
-                    for line in translated_map.values():
+                    for line in translated_cells:
                         new_doc.add_paragraph(line)
                     new_doc.save(output_path)
 
