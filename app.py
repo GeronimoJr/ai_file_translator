@@ -51,12 +51,22 @@ service_account_json = st.secrets.get("GOOGLE_DRIVE_CREDENTIALS_JSON")
 uploaded_file = st.file_uploader("Wgraj plik do przetłumaczenia", type=["xml", "csv", "xls", "xlsx", "doc", "docx"])
 target_lang = st.selectbox("Język docelowy", ["en", "pl", "de", "fr", "es", "it"])
 model = st.selectbox("Wybierz model LLM (OpenRouter)", [
-    "openai/gpt-4o-mini"
+    "openai/gpt-4o-mini",
+    "openai/gpt-4o",
+    "openai/gpt-4-turbo",
+    "anthropic/claude-3-opus",
+    "mistralai/mistral-7b-instruct",
+    "google/gemini-pro"
 ])
 api_key = st.secrets["OPENROUTER_API_KEY"]
 
 MODEL_PRICES = {
-    "openai/gpt-4o-mini": {"prompt": 0.15, "completion": 0.6}
+    "openai/gpt-4o": {"prompt": 0.5, "completion": 1.5},
+    "openai/gpt-4o-mini": {"prompt": 0.15, "completion": 0.6},
+    "openai/gpt-4-turbo": {"prompt": 1.0, "completion": 3.0},
+    "anthropic/claude-3-opus": {"prompt": 3.0, "completion": 15.0},
+    "mistralai/mistral-7b-instruct": {"prompt": 0.2, "completion": 0.2},
+    "google/gemini-pro": {"prompt": 0.25, "completion": 0.5},
 }
 
 def extract_xml_texts_and_paths(elem, path=""):
@@ -176,7 +186,7 @@ if uploaded_file:
                 elif file_type in ["csv", "xls", "xlsx"]:
                     translated_values = list(translated_map.values())
                     reshaped = np.array(translated_values).reshape(df.shape)
-                    df_out = pd.DataFrame(reshaped, columns=df.columns))).reshape(df.shape))
+                    df_out = pd.DataFrame(reshaped, columns=df.columns)
                     if file_type == "csv":
                         df_out.to_csv(output_path, index=False)
                     else:
