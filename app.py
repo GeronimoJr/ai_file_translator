@@ -1004,7 +1004,7 @@ def run_streamlit_app():
     
     st.session_state.model = st.selectbox(
         "Wybierz model LLM (OpenRouter)", 
-        list(MODEL_PRICES.keys()) + ["openai/gpt-4o-mini", "openai/gpt-4o", "anthropic/claude-3.5-haiku", "anthropic/claude-3.7-sonnet", "google/gemini-2.5-pro-preview"]
+        list(MODEL_PRICES.keys())
     )
     
     # Wykryj język, jeśli ustawiony na auto
