@@ -41,45 +41,6 @@ def parse_xml_with_fallback(raw_bytes):
 
     return None, None
 
-st.set_page_config(page_title="Tłumacz plików AI", layout="centered")
-st.title("AI Tłumacz plików CSV, XML, Excel i Word")
-
-st.markdown("""
-To narzędzie umożliwa tłumaczenie zawartości plików CSV, XML, XLS, XLSX, DOC i DOCX za pomocą wybranego modelu LLM.
-Prześlij plik, wybierz język docelowy oraz model.
-""")
-
-if "authenticated" not in st.session_state:
-    st.session_state.authenticated = False
-
-if not st.session_state.authenticated:
-    user = st.text_input("Login")
-    password = st.text_input("Hasło", type="password")
-    if st.button("Zaloguj"):
-        if user == st.secrets.get("APP_USER") and password == st.secrets.get("APP_PASSWORD"):
-            st.session_state.authenticated = True
-        else:
-            st.error("Nieprawidłowy login lub hasło")
-    st.stop()
-
-drive_folder_id = st.secrets.get("GOOGLE_DRIVE_FOLDER_ID")
-service_account_json = st.secrets.get("GOOGLE_DRIVE_CREDENTIALS_JSON")
-api_key = st.secrets["OPENROUTER_API_KEY"]
-
-MODEL_PRICES = {
-    "openai/gpt-4o-mini": {"prompt": 0.15, "completion": 0.6},
-    "mistralai/mistral-7b-instruct": {"prompt": 0.2, "completion": 0.2},
-    "google/gemini-pro": {"prompt": 0.25, "completion": 0.5},
-}
-
-def try_multiple_encodings(data, read_fn, encodings):
-    for enc in encodings:
-        try:
-            return read_fn(io.BytesIO(data), encoding=enc), enc
-        except Exception:
-            continue
-    return None, None
-
 def extract_xml_texts_and_paths(elem, path=""):
     texts = []
     if elem.text and elem.text.strip():
@@ -161,6 +122,37 @@ def parse_tabular_file(data, read_fn):
                 indices.append((col, row_idx))
     return df, lines, indices
 
+st.set_page_config(page_title="Tłumacz plików AI", layout="centered")
+st.title("AI Tłumacz plików CSV, XML, Excel i Word")
+
+st.markdown("""
+To narzędzie umożliwa tłumaczenie zawartości plików CSV, XML, XLS, XLSX, DOC i DOCX za pomocą wybranego modelu LLM.
+Prześlij plik, wybierz język docelowy oraz model.
+""")
+
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+if not st.session_state.authenticated:
+    user = st.text_input("Login")
+    password = st.text_input("Hasło", type="password")
+    if st.button("Zaloguj"):
+        if user == st.secrets.get("APP_USER") and password == st.secrets.get("APP_PASSWORD"):
+            st.session_state.authenticated = True
+        else:
+            st.error("Nieprawidłowy login lub hasło")
+    st.stop()
+
+drive_folder_id = st.secrets.get("GOOGLE_DRIVE_FOLDER_ID")
+service_account_json = st.secrets.get("GOOGLE_DRIVE_CREDENTIALS_JSON")
+api_key = st.secrets["OPENROUTER_API_KEY"]
+
+MODEL_PRICES = {
+    "openai/gpt-4o-mini": {"prompt": 0.15, "completion": 0.6},
+    "mistralai/mistral-7b-instruct": {"prompt": 0.2, "completion": 0.2},
+    "google/gemini-pro": {"prompt": 0.25, "completion": 0.5},
+}
+
 uploaded_file = st.file_uploader("Wgraj plik do przetłumaczenia", type=["xml", "csv", "xls", "xlsx", "doc", "docx"])
 target_lang = st.selectbox("Język docelowy", ["en", "pl", "de", "fr", "es", "it"])
 model = st.selectbox("Wybierz model LLM (OpenRouter)", list(MODEL_PRICES.keys()) + ["openai/gpt-4o", "openai/gpt-4-turbo", "anthropic/claude-3-opus"])
@@ -176,6 +168,8 @@ if uploaded_file:
                 st.error("Nie udało się odczytać pliku XML.")
                 st.stop()
             pairs = extract_xml_texts_and_paths(root)
+            if not pairs:
+                st.warning("Nie znaleziono tekstów do tłumaczenia w XML.")
             keys, lines = zip(*pairs) if pairs else ([], [])
         elif file_type == "csv":
             df, lines, cell_indices = parse_tabular_file(raw_bytes, lambda f: pd.read_csv(f, encoding="utf-8"))
@@ -200,15 +194,16 @@ if uploaded_file:
 
         if st.button("Przetłumacz plik"):
             translated_pairs = translate_chunks(chunks, target_lang, model, api_key)
-            if file_type in ['csv', 'xls', 'xlsx'] and len(translated_pairs) != len(cell_indices):
-                st.error(f'Błąd: liczba przetłumaczonych linii ({len(translated_pairs)}) nie zgadza się z liczbą danych wejściowych ({len(cell_indices)}).')
-                st.stop()
+            if file_type in ['csv', 'xls', 'xlsx']:
+                if len(translated_pairs) != len(cell_indices):
+                    st.error(f'Liczba przetłumaczonych linii ({len(translated_pairs)}) nie zgadza się z liczbą danych wejściowych ({len(cell_indices)}).')
+                    st.stop()
 
             with tempfile.TemporaryDirectory() as tmpdir:
                 output_path = os.path.join(tmpdir, f"output.{file_type}")
 
                 if file_type == "xml":
-                    translated_map = dict(translated_pairs)
+                    translated_map = {keys[i]: line for i, (_, line) in enumerate(translated_pairs)}
                     insert_translations_into_xml(root, translated_map)
                     tree.write(output_path, encoding="utf-8", xml_declaration=True)
                 elif file_type in ["csv", "xls", "xlsx"]:
