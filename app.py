@@ -59,8 +59,8 @@ model = st.selectbox("Wybierz model LLM (OpenRouter)", [
 api_key = st.secrets["OPENROUTER_API_KEY"]
 
 MODEL_PRICES = {
-    "openai/gpt-4o": {"prompt": 0.5, "completion": 1.5},
-    "openai/gpt-4o-mini": {"prompt": 0.25, "completion": 0.75},
+    "openai/gpt-4o-mini": {"prompt": 0.15, "completion": 0.6},
+    "openai/gpt-4o": {"prompt": 2.5, "completion": 10.0},
     "openai/gpt-4-turbo": {"prompt": 1.0, "completion": 3.0},
     "anthropic/claude-3-opus": {"prompt": 3.0, "completion": 15.0},
     "mistralai/mistral-7b-instruct": {"prompt": 0.2, "completion": 0.2},
