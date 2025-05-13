@@ -126,7 +126,7 @@ if uploaded_file:
                     if not non_empty_data:
                         continue
                     content = "
-".join(non_empty_data)
+".join(non_empty_data).join(non_empty_data)
                     prompt_tokens = len(enc.encode(content))
                     completion_tokens = int(prompt_tokens * 1.2)
                     total_tokens = prompt_tokens + completion_tokens
