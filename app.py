@@ -24,6 +24,50 @@ To narzędzie umożliwia tłumaczenie zawartości plików CSV, XML, XLS, XLSX, D
 Prześlij plik, wybierz język docelowy oraz model.
 """)
 
+def try_read_csv(raw_bytes):
+    for enc in ["utf-8", "utf-16", "iso-8859-2", "windows-1250"]:
+        try:
+            return pd.read_csv(io.BytesIO(raw_bytes), encoding=enc)
+        except Exception:
+            continue
+    raise UnicodeDecodeError("Nie udało się odczytać pliku CSV żadnym ze znanych kodowań.")
+
+def get_token_encoder(model):
+    model_token_encodings = {
+        "openai/gpt-4o": "cl100k_base",
+        "openai/gpt-4o-mini": "cl100k_base",
+        "openai/gpt-4-turbo": "cl100k_base",
+        "mistralai/mistral-7b-instruct": "cl100k_base",
+        "google/gemini-pro": "cl100k_base",
+        "anthropic/claude-3-opus": "cl100k_base"
+    }
+    encoding_name = model_token_encodings.get(model, "cl100k_base")
+    return tiktoken.get_encoding(encoding_name)
+
+def extract_xml_texts_and_paths(elem, path=""):
+    texts = []
+    if elem.text and elem.text.strip():
+        texts.append((f"{path}/text", elem.text.strip()))
+    for k, v in elem.attrib.items():
+        texts.append((f"{path}/@{k}", v))
+    for i, child in enumerate(elem):
+        child_path = f"{path}/{child.tag}[{i}]"
+        texts.extend(extract_xml_texts_and_paths(child, child_path))
+    return texts
+
+def insert_translations_into_xml(elem, translations, path=""):
+    if elem.text and elem.text.strip():
+        key = f"{path}/text"
+        if key in translations:
+            elem.text = translations[key]
+    for k in elem.attrib:
+        key = f"{path}/@{k}"
+        if key in translations:
+            elem.attrib[k] = translations[key]
+    for i, child in enumerate(elem):
+        child_path = f"{path}/{child.tag}[{i}]"
+        insert_translations_into_xml(child, translations, child_path)
+
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
@@ -59,30 +103,153 @@ api_key = st.secrets["OPENROUTER_API_KEY"]
 
 MODEL_PRICES = {
     "openai/gpt-4o-mini": {"prompt": 0.15, "completion": 0.6},
+    "openai/gpt-4o": {"prompt": 0.15, "completion": 0.6},
+    "openai/gpt-4-turbo": {"prompt": 0.01, "completion": 0.03},
+    "anthropic/claude-3-opus": {"prompt": 0.05, "completion": 0.15},
     "mistralai/mistral-7b-instruct": {"prompt": 0.2, "completion": 0.2},
     "google/gemini-pro": {"prompt": 0.25, "completion": 0.5},
 }
 
-def extract_xml_texts_and_paths(elem, path=""):
-    texts = []
-    if elem.text and elem.text.strip():
-        texts.append((f"{path}/text", elem.text.strip()))
-    for k, v in elem.attrib.items():
-        texts.append((f"{path}/@{k}", v))
-    for i, child in enumerate(elem):
-        child_path = f"{path}/{child.tag}[{i}]"
-        texts.extend(extract_xml_texts_and_paths(child, child_path))
-    return texts
+if uploaded_file:
+    file_type = uploaded_file.name.split(".")[-1].lower()
+    raw_bytes = uploaded_file.read()
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, f"output.{file_type}")
+            enc = get_token_encoder(model)
+            if file_type in ["csv", "xls", "xlsx"]:
+                df = try_read_csv(raw_bytes) if file_type == "csv" else pd.read_excel(io.BytesIO(raw_bytes))
+                translated_df = df.copy()
+                for col in df.columns:
+                    col_data = df[col].astype(str).tolist()
+                    non_empty_data = [val.strip() for val in col_data if val.strip()]
+                    if not non_empty_data:
+                        continue
+                    content = "
+".join(non_empty_data)
+                    prompt_tokens = len(enc.encode(content))
+                    completion_tokens = int(prompt_tokens * 1.2)
+                    total_tokens = prompt_tokens + completion_tokens
+                    pricing = MODEL_PRICES.get(model, {"prompt": 1.0, "completion": 1.0})
+                    cost_prompt = prompt_tokens / 1_000_000 * pricing["prompt"]
+                    cost_completion = completion_tokens / 1_000_000 * pricing["completion"]
+                    cost_total = cost_prompt + cost_completion
+                    st.info(f"Szacunkowe zużycie tokenów dla kolumny {col}: ~{total_tokens} tokenów, koszt: ~${cost_total:.4f} USD")
+                    with st.spinner(f"Tłumaczenie kolumny: {col}"):
+                        res = requests.post("https://openrouter.ai/api/v1/chat/completions",
+                            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                            json={"model": model, "messages": [
+                                {"role": "system", "content": "Tłumacz precyzyjnie bez zmiany formatu."},
+                                {"role": "user", "content": f"Przetłumacz na język {target_lang}. Zwróć każdą linię w oryginalnej kolejności, bez numeracji.
 
-def insert_translations_into_xml(elem, translations, path=""):
-    if elem.text and elem.text.strip():
-        key = f"{path}/text"
-        if key in translations:
-            elem.text = translations[key]
-    for k in elem.attrib:
-        key = f"{path}/@{k}"
-        if key in translations:
-            elem.attrib[k] = translations[key]
-    for i, child in enumerate(elem):
-        child_path = f"{path}/{child.tag}[{i}]"
-        insert_translations_into_xml(child, translations, child_path)
+{content}"}
+                            ]})
+                        result_lines = res.json()["choices"][0]["message"]["content"].splitlines()
+                    translated_col = []
+                    result_index = 0
+                    for val in col_data:
+                        if val.strip():
+                            translated_col.append(result_lines[result_index].strip())
+                            result_index += 1
+                        else:
+                            translated_col.append(val)
+                    translated_df[col] = translated_col
+                if file_type == "csv":
+                    translated_df.to_csv(output_path, index=False)
+                else:
+                    translated_df.to_excel(output_path, index=False)
+                with open(output_path, "rb") as f:
+                    st.session_state.output_bytes = f.read()
+
+            elif file_type == "xml":
+                encoding_declared = re.search(br'<\?xml[^>]*encoding=["\']([^"\']+)["\']', raw_bytes)
+                encodings = [encoding_declared.group(1).decode('ascii')] if encoding_declared else []
+                encodings += ["utf-8", "utf-16", "windows-1250", "iso-8859-2"]
+                for encoding in encodings:
+                    try:
+                        file_contents = raw_bytes.decode(encoding)
+                        break
+                    except Exception:
+                        continue
+                else:
+                    raise ValueError("Nie udało się rozpoznać kodowania XML.")
+                tree = ET.ElementTree(ET.fromstring(file_contents))
+                root = tree.getroot()
+                pairs = extract_xml_texts_and_paths(root)
+                keys, lines = zip(*pairs) if pairs else ([], [])
+                content = "
+".join(lines)
+                prompt = f"Przetłumacz na język {target_lang}. Zwróć każdą linię w oryginalnej kolejności, bez numeracji.
+
+{content}"
+                res = requests.post("https://openrouter.ai/api/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={"model": model, "messages": [
+                        {"role": "system", "content": "Tłumacz precyzyjnie bez zmiany formatu."},
+                        {"role": "user", "content": prompt}
+                    ]})
+                result = res.json()["choices"][0]["message"]["content"].splitlines()
+                translated_map = dict(zip(keys, result))
+                insert_translations_into_xml(root, translated_map)
+                tree.write(output_path, encoding="utf-8", xml_declaration=True)
+                with open(output_path, "rb") as f:
+                    st.session_state.output_bytes = f.read()
+
+            elif file_type in ["doc", "docx"]:
+                doc = Document(io.BytesIO(raw_bytes))
+                texts = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+                for table in doc.tables:
+                    for row in table.rows:
+                        for cell in row.cells:
+                            if cell.text.strip():
+                                texts.append(cell.text.strip())
+                content = "
+".join(texts)
+                prompt = f"Przetłumacz na język {target_lang}. Zwróć każdą linię w oryginalnej kolejności, bez numeracji.
+
+{content}"
+                res = requests.post("https://openrouter.ai/api/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={"model": model, "messages": [
+                        {"role": "system", "content": "Tłumacz precyzyjnie bez zmiany formatu."},
+                        {"role": "user", "content": prompt}
+                    ]})
+                result = res.json()["choices"][0]["message"]["content"].splitlines()
+                new_doc = Document()
+                index = 0
+                for p in doc.paragraphs:
+                    if p.text.strip():
+                        new_doc.add_paragraph(result[index])
+                        index += 1
+                for table in doc.tables:
+                    for row in table.rows:
+                        for cell in row.cells:
+                            if cell.text.strip():
+                                cell.text = result[index]
+                                index += 1
+                new_doc.save(output_path)
+                with open(output_path, "rb") as f:
+                    st.session_state.output_bytes = f.read()
+
+            if drive_folder_id and service_account_json:
+                creds_dict = json.loads(service_account_json)
+                scope = ["https://www.googleapis.com/auth/drive"]
+                credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+                gauth = GoogleAuth()
+                gauth.credentials = credentials
+                drive = GoogleDrive(gauth)
+                now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                result_filename = f"translated_output_{now}.{file_type}"
+                result_file = drive.CreateFile({"title": result_filename, "parents": [{"id": drive_folder_id}]})
+                result_file.SetContentFile(output_path)
+                result_file.Upload()
+                st.success("Plik zapisany na Twoim Google Drive ✅")
+
+            st.success("Tłumaczenie zakończone. Plik gotowy do pobrania.")
+
+    except Exception as e:
+        st.error("Błąd podczas przetwarzania:")
+        st.exception(traceback.format_exc())
+
+if st.session_state.output_bytes:
+    st.download_button("📁 Pobierz przetłumaczony plik", data=st.session_state.output_bytes, file_name="translated_output.csv", mime="application/octet-stream")
