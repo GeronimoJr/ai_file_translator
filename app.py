@@ -60,7 +60,7 @@ api_key = st.secrets["OPENROUTER_API_KEY"]
 
 MODEL_PRICES = {
     "openai/gpt-4o-mini": {"prompt": 0.15, "completion": 0.6},
-    "openai/gpt-4o": {"prompt": 2.5, "completion": 10.0},
+    "openai/gpt-4o": {"prompt": 2.5, "completion": 10},
     "openai/gpt-4-turbo": {"prompt": 1.0, "completion": 3.0},
     "anthropic/claude-3-opus": {"prompt": 3.0, "completion": 15.0},
     "mistralai/mistral-7b-instruct": {"prompt": 0.2, "completion": 0.2},
@@ -70,6 +70,8 @@ MODEL_PRICES = {
 if uploaded_file and api_key and target_lang:
     file_type = uploaded_file.name.split(".")[-1].lower()
     raw_bytes = uploaded_file.read()
+
+    show_metrics = False
 
     try:
         if file_type == "csv":
@@ -110,13 +112,16 @@ if uploaded_file and api_key and target_lang:
         cost_completion = (total_completion_tokens / 1_000_000) * prices["completion"]
         estimated_cost = cost_prompt + cost_completion
 
-        st.info(f"Szacunkowe zużycie tokenów: ~{total_prompt_tokens} (prompt) + ~{total_completion_tokens} (output) = ~{total_tokens} tokenów")
-        st.info(f"Szacunkowy koszt tłumaczenia: ~${estimated_cost:.4f} USD")
+        show_metrics = True
 
     except Exception as e:
         st.error("Błąd podczas przetwarzania pliku:")
         st.exception(traceback.format_exc())
         st.stop()
+
+    if show_metrics:
+        st.info(f"Szacunkowe zużycie tokenów: ~{total_prompt_tokens} (prompt) + ~{total_completion_tokens} (output) = ~{total_tokens} tokenów")
+        st.info(f"Szacunkowy koszt tłumaczenia: ~${estimated_cost:.4f} USD")
 
     if st.button("Przetłumacz plik"):
         try:
