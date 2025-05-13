@@ -4,3 +4,4 @@ PyDrive2
 google-auth
 python-docx
 tiktoken
+langid
