@@ -54,8 +54,10 @@ CHUNK_TOKEN_LIMIT = 10000
 
 MODEL_PRICES = {
     "openai/gpt-4o-mini": {"prompt": 0.15, "completion": 0.6},
-    "mistralai/mistral-7b-instruct": {"prompt": 0.2, "completion": 0.2},
-    "google/gemini-pro": {"prompt": 0.25, "completion": 0.5},
+    "openai/gpt-4o": {"prompt": 2.5, "completion": 10.0},
+    "anthropic/claude-3.5-haiku": {"prompt": 0.8, "completion": 4.0},
+    "anthropic/claude-3.7-sonnet": {"prompt": 3.0, "completion": 15.0},
+    "google/gemini-2.5-pro-preview": {"prompt": 1.25, "completion": 10.0}
 }
 
 # Inicjalizacja stanu sesji
@@ -1002,7 +1004,7 @@ def run_streamlit_app():
     
     st.session_state.model = st.selectbox(
         "Wybierz model LLM (OpenRouter)", 
-        list(MODEL_PRICES.keys()) + ["openai/gpt-4o", "openai/gpt-4-turbo", "anthropic/claude-3-opus"]
+        list(MODEL_PRICES.keys()) + ["openai/gpt-4o-mini", "openai/gpt-4o", "anthropic/claude-3.5-haiku", "anthropic/claude-3.7-sonnet", "google/gemini-2.5-pro-preview"]
     )
     
     # Wykryj język, jeśli ustawiony na auto
