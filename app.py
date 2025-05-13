@@ -115,7 +115,15 @@ if uploaded_file:
             pairs = extract_xml_texts_and_paths(root)
             keys, lines = zip(*pairs) if pairs else ([], [])
         elif file_type == "csv":
-            df = pd.read_csv(io.BytesIO(raw_bytes))
+            for enc in ["utf-8", "iso-8859-2", "windows-1250", "utf-16"]:
+                try:
+                    df = pd.read_csv(io.BytesIO(raw_bytes), encoding=enc)
+                    break
+                except UnicodeDecodeError:
+                    continue
+            else:
+                st.error("Nie udało się odczytać pliku CSV – nieznane kodowanie.")
+                st.stop()
             lines = df.astype(str).values.flatten().tolist()
         elif file_type in ["xls", "xlsx"]:
             df = pd.read_excel(io.BytesIO(raw_bytes))
