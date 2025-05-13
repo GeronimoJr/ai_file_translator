@@ -3,9 +3,9 @@ def clean_invalid_xml_chars(text):
     return ''.join(
         c for c in text
         if c in ('\t', '\n', '\r') or
-           (0x20 <= ord(c) <= 0xD7FF) or
-           (0xE000 <= ord(c) <= 0xFFFD) or
-           (0x10000 <= ord(c) <= 0x10FFFF)
+        (0x20 <= ord(c) <= 0xD7FF) or
+        (0xE000 <= ord(c) <= 0xFFFD) or
+        (0x10000 <= ord(c) <= 0x10FFFF)
 )
 
 
