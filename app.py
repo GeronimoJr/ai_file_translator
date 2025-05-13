@@ -165,8 +165,18 @@ if uploaded_file:
             translated_map = {}
             status = st.empty()
             for i, chunk in enumerate(chunks):
-                with status.spinner(f"Tłumaczenie części {i + 1} z {len(chunks)}..."):
-                content = "\n".join(l for _, l in chunk)
+    with status.spinner(f"Tłumaczenie części {i + 1} z {len(chunks)}..."):
+        content = "\n".join(l for _, l in chunk)
+        prompt = f"Przetłumacz na język {target_lang}. Zwróć każdą linię w oryginalnej kolejności, bez numeracji.\n\n{content}"
+        res = requests.post("https://openrouter.ai/api/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={"model": model, "messages": [
+                {"role": "system", "content": "Tłumacz precyzyjnie bez zmiany formatu."},
+                {"role": "user", "content": prompt}
+            ]})
+        result = res.json()["choices"][0]["message"]["content"].splitlines()
+        for (key, _), translated in zip(chunk, result):
+            translated_map[key] = translated.strip()
                 prompt = f"Przetłumacz na język {target_lang}. Zwróć każdą linię w oryginalnej kolejności, bez numeracji.\n\n{content}"
                 res = requests.post("https://openrouter.ai/api/v1/chat/completions",
                     headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
