@@ -20,7 +20,7 @@ import xml.etree.ElementTree as ET
 st.set_page_config(page_title="Tłumacz plików AI", layout="centered")
 st.title("AI Tłumacz plików CSV, XML, Excel i Word")
 st.markdown("""
-To narzędzie umożliwia tłumaczenie zawartości plików CSV, XML, XLS, XLSX, DOC i DOCX za pomocą wybranego modelu LLM.
+To narzędzie umożliwa tłumaczenie zawartości plików CSV, XML, XLS, XLSX, DOC i DOCX za pomocą wybranego modelu LLM.
 Prześlij plik, wybierz język docelowy oraz model.
 """)
 
@@ -122,16 +122,20 @@ if uploaded_file:
             cell_indices = []
             for row_idx, row in df.iterrows():
                 for col_idx, cell in enumerate(row):
-                    lines.append(str(cell))
-                    cell_indices.append((row_idx, df.columns[col_idx]))
+                    cell_str = str(cell).strip()
+                    if cell_str:
+                        lines.append(cell_str)
+                        cell_indices.append((row_idx, df.columns[col_idx]))
         elif file_type in ["xls", "xlsx"]:
             df = pd.read_excel(io.BytesIO(raw_bytes))
             lines = []
             cell_indices = []
             for row_idx, row in df.iterrows():
                 for col_idx, cell in enumerate(row):
-                    lines.append(str(cell))
-                    cell_indices.append((row_idx, df.columns[col_idx]))
+                    cell_str = str(cell).strip()
+                    if cell_str:
+                        lines.append(cell_str)
+                        cell_indices.append((row_idx, df.columns[col_idx]))
         elif file_type in ["doc", "docx"]:
             doc = Document(io.BytesIO(raw_bytes))
             lines = [p.text for p in doc.paragraphs if p.text.strip()]
