@@ -135,6 +135,11 @@ if uploaded_file:
         elif file_type in ["doc", "docx"]:
             doc = Document(io.BytesIO(raw_bytes))
             lines = [p.text for p in doc.paragraphs if p.text.strip()]
+            for table in doc.tables:
+                for row in table.rows:
+                    for cell in row.cells:
+                        if cell.text.strip():
+                            lines.append(cell.text.strip())
         else:
             st.error("Nieobsługiwany typ pliku.")
             st.stop()
@@ -165,7 +170,7 @@ if uploaded_file:
         st.info(f"Szacunkowy koszt tłumaczenia: ~${cost_total:.4f} USD")
 
         if st.button("Przetłumacz plik"):
-            translated_cells = [None] * len(lines)
+            translated_pairs = []
             for i, chunk in enumerate(chunks):
                 with st.spinner(f"Tłumaczenie części {i + 1} z {len(chunks)}..."):
                     content = "\n".join(l for _, l in chunk)
@@ -178,30 +183,56 @@ if uploaded_file:
                         ]})
                     result = res.json()["choices"][0]["message"]["content"].splitlines()
                     for (idx, _), translated in zip(chunk, result):
-                        translated_cells[idx] = translated.strip()
+                        translated_pairs.append((idx, translated.strip()))
+            translated_pairs.sort()
 
             with tempfile.TemporaryDirectory() as tmpdir:
                 output_path = os.path.join(tmpdir, f"output.{file_type}")
                 if file_type == "xml":
-                    translated_map = dict(zip(keys, translated_cells))
+                    translated_map = dict(translated_pairs)
                     insert_translations_into_xml(root, translated_map)
                     tree.write(output_path, encoding="utf-8", xml_declaration=True)
                 elif file_type in ["csv", "xls", "xlsx"]:
                     translated_df = df.copy()
-                    for (row_idx, col_name), translated in zip(cell_indices, translated_cells):
-                        translated_df.at[row_idx, col_name] = translated
+                    for (idx, (row_idx, col_name)) in enumerate(cell_indices):
+                        translated_df.at[row_idx, col_name] = translated_pairs[idx][1]
                     if file_type == "csv":
                         translated_df.to_csv(output_path, index=False)
                     else:
                         translated_df.to_excel(output_path, index=False)
                 elif file_type in ["doc", "docx"]:
                     new_doc = Document()
-                    for line in translated_cells:
-                        new_doc.add_paragraph(line)
+                    index = 0
+                    for p in doc.paragraphs:
+                        if p.text.strip():
+                            new_doc.add_paragraph(translated_pairs[index][1])
+                            index += 1
+                    for table in doc.tables:
+                        for row in table.rows:
+                            for cell in row.cells:
+                                if cell.text.strip():
+                                    cell.text = translated_pairs[index][1]
+                                    index += 1
                     new_doc.save(output_path)
 
                 with open(output_path, "rb") as f:
                     st.session_state.output_bytes = f.read()
+
+                if drive_folder_id and service_account_json:
+                    creds_dict = json.loads(service_account_json)
+                    scope = ["https://www.googleapis.com/auth/drive"]
+                    credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+                    gauth = GoogleAuth()
+                    gauth.credentials = credentials
+                    drive = GoogleDrive(gauth)
+
+                    now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                    result_filename = f"translated_output_{now}.{file_type}"
+                    result_file = drive.CreateFile({"title": result_filename, "parents": [{"id": drive_folder_id}]})
+                    result_file.SetContentFile(output_path)
+                    result_file.Upload()
+                    st.success("Plik zapisany na Twoim Google Drive ✅")
+
                 st.success("Tłumaczenie zakończone. Plik gotowy do pobrania.")
 
     except Exception as e:
