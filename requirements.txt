@@ -2,3 +2,4 @@ streamlit
 requests
 PyDrive2
 google-auth
+python-docx
