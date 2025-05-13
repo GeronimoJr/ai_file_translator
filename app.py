@@ -10,6 +10,7 @@ from pydrive2.auth import GoogleAuth
 from pydrive2.drive import GoogleDrive
 from oauth2client.service_account import ServiceAccountCredentials
 import pandas as pd
+import numpy as np
 import io
 from docx import Document
 import tiktoken
@@ -61,9 +62,6 @@ api_key = st.secrets["OPENROUTER_API_KEY"]
 
 MODEL_PRICES = {
     "openai/gpt-4o-mini": {"prompt": 0.15, "completion": 0.6},
-    "openai/gpt-4o": {"prompt": 2.5, "completion": 10.0},
-    "openai/gpt-4-turbo": {"prompt": 1.0, "completion": 3.0},
-    "anthropic/claude-3-opus": {"prompt": 3.0, "completion": 15.0},
     "mistralai/mistral-7b-instruct": {"prompt": 0.2, "completion": 0.2},
     "google/gemini-pro": {"prompt": 0.25, "completion": 0.5},
 }
@@ -157,12 +155,13 @@ if uploaded_file:
         cost_completion = completion_tokens / 1_000_000 * pricing["completion"]
         cost_total = cost_prompt + cost_completion
 
-        st.info(f"Szacunkowe zużycie tokenów: ~{prompt_tokens} (prompt) + ~{completion_tokens} (output) = ~{total_tokens} tokenów")
+        st.info(f"Szacunkowe zużycie tokenów: ~{prompt_tokens} (prompt) + ~{completion_tokens} (output) = ~{total_tokens} tokenów, w {len(chunks)} częściach")
         st.info(f"Szacunkowy koszt tłumaczenia: ~${cost_total:.4f} USD")
 
         if st.button("Przetłumacz plik"):
             translated_map = {}
             for i, chunk in enumerate(chunks):
+                st.write(f"Tłumaczenie części {i + 1} z {len(chunks)}...")
                 content = "\n".join(l for _, l in chunk)
                 prompt = f"Przetłumacz na język {target_lang}. Zwróć każdą linię w oryginalnej kolejności, bez numeracji.\n\n{content}"
                 res = requests.post("https://openrouter.ai/api/v1/chat/completions",
