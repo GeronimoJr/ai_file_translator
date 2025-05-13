@@ -58,6 +58,15 @@ model = st.selectbox("Wybierz model LLM (OpenRouter)", [
 ])
 api_key = st.secrets["OPENROUTER_API_KEY"]
 
+MODEL_PRICES = {
+    "openai/gpt-4o": {"prompt": 0.5, "completion": 1.5},
+    "openai/gpt-4o-mini": {"prompt": 0.25, "completion": 0.75},
+    "openai/gpt-4-turbo": {"prompt": 1.0, "completion": 3.0},
+    "anthropic/claude-3-opus": {"prompt": 3.0, "completion": 15.0},
+    "mistralai/mistral-7b-instruct": {"prompt": 0.2, "completion": 0.2},
+    "google/gemini-pro": {"prompt": 0.25, "completion": 0.5},
+}
+
 if uploaded_file and api_key and target_lang:
     file_type = uploaded_file.name.split(".")[-1].lower()
     raw_bytes = uploaded_file.read()
@@ -65,25 +74,44 @@ if uploaded_file and api_key and target_lang:
     try:
         if file_type == "csv":
             df = pd.read_csv(io.BytesIO(raw_bytes))
-            content = df.to_csv(index=False)
+            lines = df.to_csv(index=False).splitlines()
         elif file_type in ["xls", "xlsx"]:
             df = pd.read_excel(io.BytesIO(raw_bytes))
-            content = df.to_csv(index=False)
+            lines = df.to_csv(index=False).splitlines()
         elif file_type == "xml":
-            content = raw_bytes.decode("utf-8")
+            lines = raw_bytes.decode("utf-8").splitlines()
         elif file_type in ["doc", "docx"]:
             doc = Document(io.BytesIO(raw_bytes))
-            content = "\n".join([p.text for p in doc.paragraphs])
+            lines = [p.text for p in doc.paragraphs]
         else:
             st.error("Nieobsługiwany typ pliku.")
             st.stop()
 
         enc = tiktoken.encoding_for_model("gpt-4")
-        tokens = enc.encode(content)
-        token_count = len(tokens)
         chunk_size = 3500
-        num_chunks = math.ceil(token_count / chunk_size)
-        st.info(f"Szacunkowe zużycie tokenów: {token_count} (podzielone na {num_chunks} części)")
+        chunks, current_chunk, current_tokens = [], [], 0
+
+        for line in lines:
+            line_tokens = enc.encode(line + "\n")
+            if current_tokens + len(line_tokens) > chunk_size:
+                chunks.append("\n".join(current_chunk))
+                current_chunk, current_tokens = [], 0
+            current_chunk.append(line)
+            current_tokens += len(line_tokens)
+        if current_chunk:
+            chunks.append("\n".join(current_chunk))
+
+        total_prompt_tokens = sum(len(enc.encode(c)) for c in chunks)
+        total_completion_tokens = int(total_prompt_tokens * 1.2)
+        total_tokens = total_prompt_tokens + total_completion_tokens
+
+        prices = MODEL_PRICES.get(model, {"prompt": 1.0, "completion": 1.0})
+        cost_prompt = (total_prompt_tokens / 1_000_000) * prices["prompt"]
+        cost_completion = (total_completion_tokens / 1_000_000) * prices["completion"]
+        estimated_cost = cost_prompt + cost_completion
+
+        st.info(f"Szacunkowe zużycie tokenów: ~{total_prompt_tokens} (prompt) + ~{total_completion_tokens} (output) = ~{total_tokens} tokenów")
+        st.info(f"Szacunkowy koszt tłumaczenia: ~${estimated_cost:.4f} USD")
 
     except Exception as e:
         st.error("Błąd podczas przetwarzania pliku:")
@@ -93,8 +121,7 @@ if uploaded_file and api_key and target_lang:
     if st.button("Przetłumacz plik"):
         try:
             translated_chunks = []
-            for i in range(0, len(tokens), chunk_size):
-                chunk = enc.decode(tokens[i:i+chunk_size])
+            for idx, chunk in enumerate(chunks):
                 prompt = f"Przetłumacz poniższy tekst na język {target_lang}. Zwróć sam przetłumaczony tekst.\n\n{chunk}"
 
                 headers = {
@@ -109,7 +136,7 @@ if uploaded_file and api_key and target_lang:
                     ]
                 }
 
-                with st.spinner(f"Tłumaczenie części {i//chunk_size + 1} z {num_chunks}..."):
+                with st.spinner(f"Tłumaczenie części {idx + 1} z {len(chunks)}..."):
                     res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data)
                     translated = res.json()["choices"][0]["message"]["content"]
                     translated_chunks.append(translated)
