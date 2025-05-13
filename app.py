@@ -193,4 +193,4 @@ if uploaded_file:
         st.exception(traceback.format_exc())
 
 if st.session_state.output_bytes:
-    st.download_button("📁 Pobierz przetłumaczony plik", data=st.session_state.output_bytes, file_name="translated_output", mime="application/octet-stream")
+    st.download_button("📁 Pobierz przetłumaczony plik", data=st.session_state.output_bytes, file_name=f"translated_output.{file_type}", mime="application/octet-stream")
