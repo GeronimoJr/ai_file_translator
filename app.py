@@ -10,6 +10,25 @@ def clean_invalid_xml_chars(text):
 
 
 
+def parse_xml_with_fallback(raw_bytes):
+    match = re.search(br'<\?xml[^>]*encoding=["\']([^"\']+)["\']', raw_bytes)
+    declared_enc = match.group(1).decode('ascii').lower() if match else None
+    candidates = [declared_enc] if declared_enc else []
+    candidates += ['utf-16', 'utf-8', 'iso-8859-2', 'windows-1250']
+
+    for enc in candidates:
+        try:
+            decoded = raw_bytes.decode(enc)
+            cleaned = clean_invalid_xml_chars(decoded)
+            tree = ET.ElementTree(ET.fromstring(cleaned))
+            return tree, tree.getroot()
+        except Exception:
+            continue
+
+    return None, None
+
+
+
 import streamlit as st
 import requests
 import tempfile
@@ -178,11 +197,12 @@ if uploaded_file:
 
     try:
         if file_type == "xml":
-            content = raw_bytes.decode("utf-8", errors="ignore")
-            tree = ET.ElementTree(ET.fromstring(content))
-            root = tree.getroot()
-            pairs = extract_xml_texts_and_paths(root)
-            keys, lines = zip(*pairs) if pairs else ([], [])
+        tree, root = parse_xml_with_fallback(raw_bytes)
+        if not tree:
+            st.error("Nie udało się odczytać pliku XML.")
+            st.stop()
+        pairs = extract_xml_texts_and_paths(root)
+        keys, lines = zip(*pairs) if pairs else ([], [])
         elif file_type == "csv":
             df, lines, cell_indices = parse_tabular_file(raw_bytes, lambda f: pd.read_csv(f, encoding="utf-8"))
         elif file_type in ["xls", "xlsx"]:
