@@ -51,19 +51,12 @@ service_account_json = st.secrets.get("GOOGLE_DRIVE_CREDENTIALS_JSON")
 uploaded_file = st.file_uploader("Wgraj plik do przetłumaczenia", type=["xml", "csv", "xls", "xlsx", "doc", "docx"])
 target_lang = st.selectbox("Język docelowy", ["en", "pl", "de", "fr", "es", "it"])
 model = st.selectbox("Wybierz model LLM (OpenRouter)", [
-    "openai/gpt-4o-mini",
-    "openai/gpt-4o",
-    "openai/gpt-4-turbo",
-    "anthropic/claude-3-opus",
-    "mistralai/mistral-7b-instruct",
-    "google/gemini-pro"
+    "openai/gpt-4o-mini"
 ])
 api_key = st.secrets["OPENROUTER_API_KEY"]
 
 MODEL_PRICES = {
-    "openai/gpt-4o-mini": {"prompt": 0.15, "completion": 0.6},
-    "mistralai/mistral-7b-instruct": {"prompt": 0.2, "completion": 0.2},
-    "google/gemini-pro": {"prompt": 0.25, "completion": 0.5},
+    "openai/gpt-4o-mini": {"prompt": 0.15, "completion": 0.6}
 }
 
 def extract_xml_texts_and_paths(elem, path=""):
@@ -160,8 +153,9 @@ if uploaded_file:
 
         if st.button("Przetłumacz plik"):
             translated_map = {}
+            status = st.empty()
             for i, chunk in enumerate(chunks):
-                st.write(f"Tłumaczenie części {i + 1} z {len(chunks)}...")
+                status.spinner(f"Tłumaczenie części {i + 1} z {len(chunks)}...")
                 content = "\n".join(l for _, l in chunk)
                 prompt = f"Przetłumacz na język {target_lang}. Zwróć każdą linię w oryginalnej kolejności, bez numeracji.\n\n{content}"
                 res = requests.post("https://openrouter.ai/api/v1/chat/completions",
@@ -180,7 +174,9 @@ if uploaded_file:
                     insert_translations_into_xml(root, translated_map)
                     tree.write(output_path, encoding="utf-8", xml_declaration=True)
                 elif file_type in ["csv", "xls", "xlsx"]:
-                    df_out = pd.DataFrame(np.array(list(translated_map.values())).reshape(df.shape))
+                    translated_values = list(translated_map.values())
+                    reshaped = np.array(translated_values).reshape(df.shape)
+                    df_out = pd.DataFrame(reshaped, columns=df.columns))).reshape(df.shape))
                     if file_type == "csv":
                         df_out.to_csv(output_path, index=False)
                     else:
