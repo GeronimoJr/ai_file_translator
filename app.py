@@ -196,7 +196,7 @@ if uploaded_file:
     raw_bytes = uploaded_file.read()
 
     try:
-        if file_type == "xml":
+            if file_type == "xml":
         tree, root = parse_xml_with_fallback(raw_bytes)
         if not tree:
             st.error("Nie udało się odczytać pliku XML.")
