@@ -7,22 +7,40 @@ import traceback
 import json
 import time
 from datetime import datetime
-from pydrive2.auth import GoogleAuth
-from pydrive2.drive import GoogleDrive
-from oauth2client.service_account import ServiceAccountCredentials
 import pandas as pd
 import io
-from docx import Document
-import tiktoken
 import xml.etree.ElementTree as ET
+import tiktoken
 import concurrent.futures
+
+# Warunkowy import dla Google Drive
 try:
-    import langid  # Do wykrywania języka
+    from pydrive2.auth import GoogleAuth
+    from pydrive2.drive import GoogleDrive
+    from oauth2client.service_account import ServiceAccountCredentials
+    GOOGLE_DRIVE_AVAILABLE = True
 except ImportError:
-    langid = None
+    GOOGLE_DRIVE_AVAILABLE = False
+
+# Warunkowy import dla wykrywania języka
+try:
+    import langid
+    LANGID_AVAILABLE = True
+except ImportError:
+    LANGID_AVAILABLE = False
+
+# Warunkowy import dla dokumentów Word
+try:
+    from docx import Document
+    DOCX_AVAILABLE = True
+except ImportError:
+    DOCX_AVAILABLE = False
 
 # Stałe konfiguracyjne
-SUPPORTED_FILE_TYPES = ["xml", "csv", "xls", "xlsx", "doc", "docx"]
+SUPPORTED_FILE_TYPES = ["xml", "csv", "xls", "xlsx"]
+if DOCX_AVAILABLE:
+    SUPPORTED_FILE_TYPES.extend(["doc", "docx"])
+
 SUPPORTED_LANGUAGES = {
     "auto": "Automatyczne wykrywanie",
     "en": "angielski", 
@@ -85,11 +103,11 @@ def parse_xml_with_fallback(raw_bytes):
             decoded = raw_bytes.decode(enc)
             cleaned = clean_invalid_xml_chars(decoded)
             tree = ET.ElementTree(ET.fromstring(cleaned))
-            return tree, tree.getroot()
+            return tree, tree.getroot(), enc
         except Exception:
             continue
 
-    return None, None
+    return None, None, None
 
 # Usunięto dekorator cache_data, ponieważ ElementTree.Element nie jest hashowalny
 def extract_xml_texts_and_paths(elem, path=""):
@@ -164,7 +182,7 @@ def detect_language(text):
     try:
         if not text or len(text.strip()) < 5:
             return None
-        if langid:
+        if LANGID_AVAILABLE:
             lang, _ = langid.classify(text)
             return lang
         return None
@@ -174,7 +192,7 @@ def detect_language(text):
 @st.cache_data(ttl=3600)
 def detect_source_language(texts):
     """Wykrywa główny język źródłowy na podstawie próbki tekstów"""
-    if not langid or not texts:
+    if not LANGID_AVAILABLE or not texts:
         return "auto"  # Domyślnie auto-detect
         
     # Bierz próbkę 10 najdłuższych tekstów do analizy
@@ -517,17 +535,35 @@ def parse_excel_file(raw_bytes):
     """Parsowanie pliku Excel z cache'owaniem"""
     return pd.read_excel(io.BytesIO(raw_bytes))
 
-@st.cache_data(ttl=3600)
+# Funkcja nie używa dekoratora cache_data, gdyż obiekty Document nie są serializable
 def parse_doc_file(raw_bytes):
-    """Parsowanie pliku DOC/DOCX z cache'owaniem"""
+    """Parsowanie pliku DOC/DOCX bez cache'owania"""
+    if not DOCX_AVAILABLE:
+        st.error("Biblioteka python-docx nie jest dostępna. Nie można przetwarzać plików .docx")
+        return None, []
+    
     doc = Document(io.BytesIO(raw_bytes))
-    lines = [p.text for p in doc.paragraphs if p.text.strip()]
+    
+    # Zamiast zwracać obiekt Document, zwracamy tylko tekst
+    paragraphs = []
+    for p in doc.paragraphs:
+        if p.text.strip():
+            paragraphs.append(p.text.strip())
+    
+    # Tabele
+    table_texts = []
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
                 if cell.text.strip():
-                    lines.append(cell.text.strip())
-    return doc, lines
+                    table_texts.append(cell.text.strip())
+    
+    # Zapamiętaj ilość paragrafów (potrzebne przy odtwarzaniu dokumentu)
+    paragraph_count = len(paragraphs)
+    
+    # Zwróć złączony tekst
+    all_texts = paragraphs + table_texts
+    return {"paragraphs": paragraphs, "table_texts": table_texts}, all_texts
 
 def translate_chunks_with_progress(chunks, source_lang, target_lang, model, api_key):
     """Wersja funkcji translate_chunks z paskiem postępu"""
@@ -643,7 +679,7 @@ def process_file():
     
     try:
         if file_type == "xml":
-            tree, root = parse_xml_with_fallback(raw_bytes)
+            tree, root, encoding = parse_xml_with_fallback(raw_bytes)
             if not tree:
                 st.error("Nie udało się odczytać pliku XML.")
                 return None
@@ -658,6 +694,7 @@ def process_file():
             st.session_state.xml_keys = keys
             st.session_state.xml_tree = tree
             st.session_state.xml_root = root
+            st.session_state.xml_encoding = encoding
             
             return lines
             
@@ -707,10 +744,14 @@ def process_file():
             return texts_to_translate
             
         elif file_type in ["doc", "docx"]:
-            doc, lines = parse_doc_file(raw_bytes)
+            if not DOCX_AVAILABLE:
+                st.error("Biblioteka python-docx nie jest dostępna. Nie można przetwarzać plików .docx")
+                return None
+                
+            doc_data, lines = parse_doc_file(raw_bytes)
             
             # Zapisz dane w stanie sesji
-            st.session_state.doc_object = doc
+            st.session_state.doc_data = doc_data
                         
             return lines
         else:
@@ -726,7 +767,8 @@ def save_translation_to_file(output_path, file_type):
     """Zapisuje przetłumaczony plik na dysk"""
     if file_type == "xml":
         tree = st.session_state.xml_tree
-        tree.write(output_path, encoding="utf-8", xml_declaration=True)
+        encoding = st.session_state.xml_encoding or "utf-8"
+        tree.write(output_path, encoding=encoding, xml_declaration=True)
     
     elif file_type in ["csv"]:
         translated_df = st.session_state.translated_df
@@ -739,15 +781,51 @@ def save_translation_to_file(output_path, file_type):
         translated_df.to_excel(output_path, index=False)
         
     elif file_type in ["doc", "docx"]:
-        new_doc = st.session_state.new_doc
+        if not DOCX_AVAILABLE:
+            st.error("Biblioteka python-docx nie jest dostępna. Nie można zapisać pliku .docx")
+            return
+            
+        # Tworzymy nowy dokument z przetłumaczonym tekstem
+        new_doc = Document()
+        
+        # Dodajemy paragrafy
+        doc_data = st.session_state.doc_data
+        translated_texts = st.session_state.translated_texts
+        
+        # Dodajemy paragrafy
+        para_count = len(doc_data["paragraphs"])
+        for i in range(para_count):
+            new_doc.add_paragraph(translated_texts[i])
+            
+        # Dodajemy tekst tabel
+        table_count = len(doc_data["table_texts"])
+        if table_count > 0:
+            # Dodajemy separator
+            new_doc.add_paragraph("---")
+            
+            # Dodajemy przetłumaczony tekst tabel
+            for i in range(table_count):
+                idx = para_count + i
+                if idx < len(translated_texts):
+                    new_doc.add_paragraph(translated_texts[idx])
+        
+        # Zapisz dokument
         new_doc.save(output_path)
 
 def save_to_google_drive(output_path, file_type):
     """Zapisuje plik na Google Drive"""
+    if not GOOGLE_DRIVE_AVAILABLE:
+        st.warning("Biblioteka pydrive2 nie jest dostępna. Zapis na Google Drive niemożliwy.")
+        return False
+    
     drive_folder_id = st.secrets.get("GOOGLE_DRIVE_FOLDER_ID")
     service_account_json = st.secrets.get("GOOGLE_DRIVE_CREDENTIALS_JSON")
     
-    if drive_folder_id and service_account_json:
+    if not drive_folder_id or not service_account_json:
+        st.warning("Brak konfiguracji dla Google Drive. Sprawdź secrets.toml")
+        return False
+    
+    try:
         creds_dict = json.loads(service_account_json)
         scope = ["https://www.googleapis.com/auth/drive"]
         credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
@@ -760,6 +838,10 @@ def save_to_google_drive(output_path, file_type):
         result_file.SetContentFile(output_path)
         result_file.Upload()
         st.success("Plik zapisany na Twoim Google Drive ✅")
+        return True
+    except Exception as e:
+        st.error(f"Błąd podczas zapisu na Google Drive: {e}")
+        return False
 
 def start_translation():
     """Rozpocznij proces tłumaczenia"""
@@ -829,25 +911,21 @@ def handle_translation():
                     st.session_state.xml_tree.write(output_path, encoding="utf-8", xml_declaration=True)
                 
                 elif file_type in ["doc", "docx"]:
-                    doc = st.session_state.doc_object
-                    new_doc = Document()
-                    index = 0
+                    if not DOCX_AVAILABLE:
+                        st.error("Biblioteka python-docx nie jest dostępna. Nie można przetworzyć pliku .docx")
+                        st.session_state.translation_in_progress = False
+                        return
+                        
+                    # Zapisz przetłumaczone teksty w porządku oryginalnym
+                    translated_texts = []
+                    for idx, text in translated_pairs:
+                        translated_texts.append(text)
+                        
+                    # Zapisz przetłumaczone teksty do użycia przy zapisie
+                    st.session_state.translated_texts = translated_texts
                     
-                    for p in doc.paragraphs:
-                        if p.text.strip():
-                            new_doc.add_paragraph(translated_pairs[index][1])
-                            index += 1
-                            
-                    for table in doc.tables:
-                        new_table = new_doc.add_table(rows=len(table.rows), cols=len(table.columns))
-                        for i, row in enumerate(table.rows):
-                            for j, cell in enumerate(row.cells):
-                                if cell.text.strip():
-                                    new_table.cell(i, j).text = translated_pairs[index][1]
-                                    index += 1
-                                    
-                    st.session_state.new_doc = new_doc
-                    new_doc.save(output_path)
+                    # Zapisz przetłumaczony dokument
+                    save_translation_to_file(output_path, file_type)
                 
                 with open(output_path, "rb") as f:
                     st.session_state.output_bytes = f.read()
@@ -880,11 +958,15 @@ def run_streamlit_app():
         user = st.text_input("Login")
         password = st.text_input("Hasło", type="password")
         if st.button("Zaloguj"):
-            if user == st.secrets.get("APP_USER") and password == st.secrets.get("APP_PASSWORD"):
-                st.session_state.authenticated = True
-                st.rerun()
-            else:
-                st.error("Nieprawidłowy login lub hasło")
+            try:
+                if user == st.secrets.get("APP_USER") and password == st.secrets.get("APP_PASSWORD"):
+                    st.session_state.authenticated = True
+                    st.rerun()
+                else:
+                    st.error("Nieprawidłowy login lub hasło")
+            except Exception as e:
+                st.error(f"Błąd uwierzytelniania: {e}")
+                st.error("Sprawdź konfigurację secrets.toml")
         return
     
     # Interfejs główny pobierania pliku
@@ -924,7 +1006,7 @@ def run_streamlit_app():
     )
     
     # Wykryj język, jeśli ustawiony na auto
-    if st.session_state.source_lang == "auto" and lines and langid:
+    if st.session_state.source_lang == "auto" and lines and LANGID_AVAILABLE:
         detected_lang = detect_source_language(lines)
         st.session_state.detected_lang = detected_lang
         st.info(f"Wykryto język źródłowy: {detected_lang}")
@@ -973,6 +1055,10 @@ def run_streamlit_app():
                 file_name=f"translated_output.{st.session_state.file_type}", 
                 mime="application/octet-stream"
             )
+        
+        # Status zapisania na Google Drive
+        if GOOGLE_DRIVE_AVAILABLE:
+            st.info("Plik został automatycznie zapisany na Google Drive (jeśli skonfigurowano)")
         
         # Opcja do resetowania i rozpoczęcia nowego tłumaczenia
         if st.button("Rozpocznij nowe tłumaczenie"):
