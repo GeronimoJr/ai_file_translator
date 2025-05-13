@@ -162,15 +162,8 @@ if uploaded_file:
             translated_cells = [None] * (df.shape[0] * df.shape[1])
             for i, chunk in enumerate(chunks):
                 with st.spinner(f"Tłumaczenie części {i + 1} z {len(chunks)}..."):
-                    content = "
-".join(l for _, l in chunk)
-                    prompt = f"Przetłumacz na język {target_lang}. Zwróć każdą linię w oryginalnej kolejności, bez numeracji.
-
-{content}"
-
-{content}"
-
-{content}"
+                    content = "\n".join(l for _, l in chunk)
+                    prompt = f"Przetłumacz na język {target_lang}. Zwróć każdą linię w oryginalnej kolejności, bez numeracji.\n\n{content}"
                     res = requests.post("https://openrouter.ai/api/v1/chat/completions",
                         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                         json={"model": model, "messages": [
