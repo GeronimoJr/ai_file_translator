@@ -61,10 +61,7 @@ model = st.selectbox("Wybierz model LLM (OpenRouter)", [
 api_key = st.secrets["OPENROUTER_API_KEY"]
 
 MODEL_PRICES = {
-    "openai/gpt-4o": {"prompt": 0.5, "completion": 1.5},
-    "openai/gpt-4o-mini": {"prompt": 0.25, "completion": 0.75},
-    "openai/gpt-4-turbo": {"prompt": 1.0, "completion": 3.0},
-    "anthropic/claude-3-opus": {"prompt": 3.0, "completion": 15.0},
+    "openai/gpt-4o-mini": {"prompt": 0.15, "completion": 0.6},
     "mistralai/mistral-7b-instruct": {"prompt": 0.2, "completion": 0.2},
     "google/gemini-pro": {"prompt": 0.25, "completion": 0.5},
 }
@@ -163,23 +160,19 @@ if uploaded_file:
 
         if st.button("Przetłumacz plik"):
             translated_map = {}
-            status = st.empty()
             for i, chunk in enumerate(chunks):
-                with status.spinner(f"Tłumaczenie części {i + 1} z {len(chunks)}..."):
-                    content = "
-".join(l for _, l in chunk)
-                    prompt = f"Przetłumacz na język {target_lang}. Zwróć każdą linię w oryginalnej kolejności, bez numeracji.
-
-{content}"
-                    res = requests.post("https://openrouter.ai/api/v1/chat/completions",
-                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                        json={"model": model, "messages": [
-                            {"role": "system", "content": "Tłumacz precyzyjnie bez zmiany formatu."},
-                            {"role": "user", "content": prompt}
-                        ]})
-                    result = res.json()["choices"][0]["message"]["content"].splitlines()
-                    for (key, _), translated in zip(chunk, result):
-                        translated_map[key] = translated.strip()
+                st.write(f"Tłumaczenie części {i + 1} z {len(chunks)}...")
+                content = "\n".join(l for _, l in chunk)
+                prompt = f"Przetłumacz na język {target_lang}. Zwróć każdą linię w oryginalnej kolejności, bez numeracji.\n\n{content}"
+                res = requests.post("https://openrouter.ai/api/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={"model": model, "messages": [
+                        {"role": "system", "content": "Tłumacz precyzyjnie bez zmiany formatu."},
+                        {"role": "user", "content": prompt}
+                    ]})
+                result = res.json()["choices"][0]["message"]["content"].splitlines()
+                for (key, _), translated in zip(chunk, result):
+                    translated_map[key] = translated.strip()
 
             with tempfile.TemporaryDirectory() as tmpdir:
                 output_path = os.path.join(tmpdir, f"output.{file_type}")
