@@ -5,3 +5,4 @@ google-auth
 python-docx
 tiktoken
 langid
+openpyxl
