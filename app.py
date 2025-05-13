@@ -159,12 +159,14 @@ if uploaded_file:
         st.info(f"Szacunkowy koszt tłumaczenia: ~${cost_total:.4f} USD")
 
         if st.button("Przetłumacz plik"):
-            translated_map = {}
-            status = st.empty()
+            translated_cells = [None] * (df.shape[0] * df.shape[1])
             for i, chunk in enumerate(chunks):
                 with st.spinner(f"Tłumaczenie części {i + 1} z {len(chunks)}..."):
-                    content = "\n".join(l for _, l in chunk)
-                    prompt = f"Przetłumacz na język {target_lang}. Zwróć każdą linię w oryginalnej kolejności, bez numeracji.\n\n{content}"
+                    content = "
+".join(l for _, l in chunk)
+                    prompt = f"Przetłumacz na język {target_lang}. Zwróć każdą linię w oryginalnej kolejności, bez numeracji.
+
+{content}"
                     res = requests.post("https://openrouter.ai/api/v1/chat/completions",
                         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                         json={"model": model, "messages": [
@@ -172,8 +174,8 @@ if uploaded_file:
                             {"role": "user", "content": prompt}
                         ]})
                     result = res.json()["choices"][0]["message"]["content"].splitlines()
-                    for (key, _), translated in zip(chunk, result):
-                        translated_map[key] = translated.strip()
+                    for (idx, _), translated in zip(chunk, result):
+                        translated_cells[idx] = translated.strip()
 
             with tempfile.TemporaryDirectory() as tmpdir:
                 output_path = os.path.join(tmpdir, f"output.{file_type}")
@@ -181,8 +183,7 @@ if uploaded_file:
                     insert_translations_into_xml(root, translated_map)
                     tree.write(output_path, encoding="utf-8", xml_declaration=True)
                 elif file_type in ["csv", "xls", "xlsx"]:
-                    translated_values = list(translated_map.values())
-                    reshaped = np.array(translated_values).reshape(df.shape)
+                    reshaped = np.array(translated_cells).reshape(df.shape)
                     df_out = pd.DataFrame(reshaped, columns=df.columns)
                     if file_type == "csv":
                         df_out.to_csv(output_path, index=False)
