@@ -195,7 +195,7 @@ if uploaded_file:
 
         if st.button("Przetłumacz plik"):
             translated_pairs = translate_chunks(chunks, target_lang, model, api_key)
-            if len(translated_pairs) != len(cell_indices):
+            if file_type in ['csv', 'xls', 'xlsx'] and len(translated_pairs) != len(cell_indices):
                 st.error(f'Błąd: liczba przetłumaczonych linii ({len(translated_pairs)}) nie zgadza się z liczbą danych wejściowych ({len(cell_indices)}).')
                 st.stop()
 
@@ -240,7 +240,7 @@ if uploaded_file:
                     gauth.credentials = credentials
                     drive = GoogleDrive(gauth)
                     now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                    result_filename = f"translated_output_{now}.{file_type}"
+                    result_filename = "translated_output.{now}.{file_type}".format(now=now, file_type=file_type)
                     result_file = drive.CreateFile({"title": result_filename, "parents": [{"id": drive_folder_id}]})
                     result_file.SetContentFile(output_path)
                     result_file.Upload()
@@ -253,4 +253,4 @@ if uploaded_file:
         st.exception(traceback.format_exc())
 
 if st.session_state.get("output_bytes"):
-    st.download_button("📁 Pobierz przetłumaczony plik", data=st.session_state.output_bytes, file_name="translated_output", mime="application/octet-stream")
+    st.download_button("📁 Pobierz przetłumaczony plik", data=st.session_state.output_bytes, file_name=f"translated_output.{file_type}", mime="application/octet-stream")
