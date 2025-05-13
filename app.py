@@ -110,6 +110,28 @@ def translate_chunks(chunks, target_lang, model, api_key):
     for i, chunk in enumerate(chunks):
         with st.spinner(f"Tłumaczenie części {i + 1} z {len(chunks)}..."):
             content = "\n".join(line for _, line in chunk)
+            expected_count = len(chunk)
+            prompt = f"Przetłumacz na język {target_lang}. Zwróć każdą linię w oryginalnej kolejności, bez numeracji.\n\n{content}"
+            res = requests.post("https://openrouter.ai/api/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={"model": model, "messages": [
+                    {"role": "system", "content": "Tłumacz precyzyjnie bez zmiany formatu."},
+                    {"role": "user", "content": prompt}
+                ]})
+            result_lines = res.json()["choices"][0]["message"]["content"].splitlines()
+            if len(result_lines) < expected_count:
+                result_lines += [""] * (expected_count - len(result_lines))
+            elif len(result_lines) > expected_count:
+                result_lines = result_lines[:expected_count]
+            for (idx, _), translated in zip(chunk, result_lines):
+                translated_pairs.append((idx, translated.strip()))
+    translated_pairs.sort()
+    return translated_pairs
+
+    translated_pairs = []
+    for i, chunk in enumerate(chunks):
+        with st.spinner(f"Tłumaczenie części {i + 1} z {len(chunks)}..."):
+            content = "\n".join(line for _, line in chunk)
             prompt = f"Przetłumacz na język {target_lang}. Zwróć każdą linię w oryginalnej kolejności, bez numeracji.\n\n{content}"
             res = requests.post("https://openrouter.ai/api/v1/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -173,6 +195,9 @@ if uploaded_file:
 
         if st.button("Przetłumacz plik"):
             translated_pairs = translate_chunks(chunks, target_lang, model, api_key)
+            if len(translated_pairs) != len(cell_indices):
+                st.error(f'Błąd: liczba przetłumaczonych linii ({len(translated_pairs)}) nie zgadza się z liczbą danych wejściowych ({len(cell_indices)}).')
+                st.stop()
 
             with tempfile.TemporaryDirectory() as tmpdir:
                 output_path = os.path.join(tmpdir, f"output.{file_type}")
