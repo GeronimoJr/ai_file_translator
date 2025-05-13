@@ -165,7 +165,7 @@ if uploaded_file:
             translated_map = {}
             status = st.empty()
             for i, chunk in enumerate(chunks):
-                status.spinner(f"Tłumaczenie części {i + 1} z {len(chunks)}...")
+                with status.spinner(f"Tłumaczenie części {i + 1} z {len(chunks)}...")
                 content = "\n".join(l for _, l in chunk)
                 prompt = f"Przetłumacz na język {target_lang}. Zwróć każdą linię w oryginalnej kolejności, bez numeracji.\n\n{content}"
                 res = requests.post("https://openrouter.ai/api/v1/chat/completions",
