@@ -1,3 +1,19 @@
+import streamlit as st
+import requests
+import tempfile
+import os
+import re
+import traceback
+import json
+from datetime import datetime
+from pydrive2.auth import GoogleAuth
+from pydrive2.drive import GoogleDrive
+from oauth2client.service_account import ServiceAccountCredentials
+import pandas as pd
+import io
+from docx import Document
+import tiktoken
+import xml.etree.ElementTree as ET
 
 def clean_invalid_xml_chars(text):
     return ''.join(
@@ -7,8 +23,6 @@ def clean_invalid_xml_chars(text):
         (0xE000 <= ord(c) <= 0xFFFD) or
         (0x10000 <= ord(c) <= 0x10FFFF)
 )
-
-
 
 def parse_xml_with_fallback(raw_bytes):
     match = re.search(br'<\?xml[^>]*encoding=["\']([^"\']+)["\']', raw_bytes)
@@ -26,25 +40,6 @@ def parse_xml_with_fallback(raw_bytes):
             continue
 
     return None, None
-
-
-
-import streamlit as st
-import requests
-import tempfile
-import os
-import re
-import traceback
-import json
-from datetime import datetime
-from pydrive2.auth import GoogleAuth
-from pydrive2.drive import GoogleDrive
-from oauth2client.service_account import ServiceAccountCredentials
-import pandas as pd
-import io
-from docx import Document
-import tiktoken
-import xml.etree.ElementTree as ET
 
 # -------------------- Setup --------------------
 st.set_page_config(page_title="Tłumacz plików AI", layout="centered")
