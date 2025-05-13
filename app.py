@@ -166,21 +166,10 @@ if uploaded_file:
     raw_bytes = uploaded_file.read()
 
     try:
-        elif file_type == "xml":
-            encoding_declared = re.search(br'<\?xml[^>]*encoding=["\']([^"\']+)["\']', raw_bytes)
-            encodings_to_try = [encoding_declared.group(1).decode('ascii')] if encoding_declared else []
-            encodings_to_try += ["utf-8", "iso-8859-2", "windows-1250", "utf-16"]
-            for enc in encodings_to_try:
-                try:
-                    content = raw_bytes.decode(enc)
-                    tree = ET.ElementTree(ET.fromstring(content))
-                    root = tree.getroot()
-                    break
-                except Exception:
-                    continue
-            else:
-                st.error("Nie udało się odczytać pliku XML – nieprawidłowe kodowanie lub błędna składnia.")
-                st.stop()
+        if file_type == "xml":
+            content = raw_bytes.decode("utf-8", errors="ignore")
+            tree = ET.ElementTree(ET.fromstring(content))
+            root = tree.getroot()
             pairs = extract_xml_texts_and_paths(root)
             keys, lines = zip(*pairs) if pairs else ([], [])
         elif file_type == "csv":
