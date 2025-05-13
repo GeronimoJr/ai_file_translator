@@ -16,7 +16,10 @@ from docx import Document
 import tiktoken
 import xml.etree.ElementTree as ET
 import concurrent.futures
-import langid  # Do wykrywania języka
+try:
+    import langid  # Do wykrywania języka
+except ImportError:
+    langid = None
 
 # Stałe konfiguracyjne
 SUPPORTED_FILE_TYPES = ["xml", "csv", "xls", "xlsx", "doc", "docx"]
@@ -70,7 +73,7 @@ def clean_invalid_xml_chars(text):
         (0x10000 <= ord(c) <= 0x10FFFF)
     )
 
-@st.cache_data(ttl=3600)
+# Usunięto dekorator cache_data, ponieważ ElementTree.Element nie jest hashowalny
 def parse_xml_with_fallback(raw_bytes):
     match = re.search(br'<\?xml[^>]*encoding=["\']([^"\']+)["\']', raw_bytes)
     declared_enc = match.group(1).decode('ascii').lower() if match else None
@@ -88,7 +91,7 @@ def parse_xml_with_fallback(raw_bytes):
 
     return None, None
 
-@st.cache_data(ttl=3600)
+# Usunięto dekorator cache_data, ponieważ ElementTree.Element nie jest hashowalny
 def extract_xml_texts_and_paths(elem, path=""):
     texts = []
     if elem.text and elem.text.strip():
@@ -161,15 +164,17 @@ def detect_language(text):
     try:
         if not text or len(text.strip()) < 5:
             return None
-        lang, _ = langid.classify(text)
-        return lang
+        if langid:
+            lang, _ = langid.classify(text)
+            return lang
+        return None
     except:
         return None
 
 @st.cache_data(ttl=3600)
 def detect_source_language(texts):
     """Wykrywa główny język źródłowy na podstawie próbki tekstów"""
-    if not texts:
+    if not langid or not texts:
         return "auto"  # Domyślnie auto-detect
         
     # Bierz próbkę 10 najdłuższych tekstów do analizy
@@ -919,7 +924,7 @@ def run_streamlit_app():
     )
     
     # Wykryj język, jeśli ustawiony na auto
-    if st.session_state.source_lang == "auto" and lines:
+    if st.session_state.source_lang == "auto" and lines and langid:
         detected_lang = detect_source_language(lines)
         st.session_state.detected_lang = detected_lang
         st.info(f"Wykryto język źródłowy: {detected_lang}")
