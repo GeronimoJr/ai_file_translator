@@ -134,7 +134,7 @@ if uploaded_file:
             st.stop()
 
         enc = tiktoken.encoding_for_model("gpt-4")
-        chunk_size = 3500
+        chunk_size = 10000
         chunks, current_chunk, current_tokens = [], [], 0
         for i, line in enumerate(lines):
             token_len = len(enc.encode(line))
