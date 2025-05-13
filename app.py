@@ -57,6 +57,8 @@ def init_session_state():
         st.session_state.translated_df = None
     if "original_df" not in st.session_state:
         st.session_state.original_df = None
+    if "glossary" not in st.session_state:
+        st.session_state.glossary = {}
 
 @st.cache_data(ttl=3600)
 def clean_invalid_xml_chars(text):
@@ -122,6 +124,15 @@ def is_numeric_value(value):
             return True
         # Sprawdź czy to liczba z przecinkiem lub kropką
         if re.match(r'^\d+[,.]?\d*$', value.strip()):
+            return True
+    return False
+
+@st.cache_data(ttl=3600)
+def is_product_code(value):
+    """Sprawdza czy wartość jest kodem produktu, który nie powinien być tłumaczony"""
+    if isinstance(value, str):
+        # Sprawdź wzorce dla kodów produktów (np. 700.KG-2)
+        if re.match(r'\d{3}\.\w+-\d+', value) or re.match(r'\d{3}\.\w+-\d+[a-zA-Z.]+', value):
             return True
     return False
 
@@ -234,6 +245,285 @@ def retry_api_call(func, max_retries=3, initial_backoff=1):
             st.warning(f"Próba {retries} nieudana: {e}. Ponowienie za {wait_time}s")
             time.sleep(wait_time)
 
+def call_translation_api(prompt, source_lang, target_lang, model, api_key):
+    """Wywołuje API tłumaczenia z odpowiednimi instrukcjami"""
+    if source_lang == "auto":
+        system_prompt = (f"You are a precise translator. Translate the text from the source language to {target_lang}. "
+                        f"Maintain the exact structure and format of the input. "
+                        f"Don't change numbers, product codes, or measurements. "
+                        f"Translate only text content, maintaining item numbers if present.")
+    else:
+        system_prompt = (f"You are a precise translator. Translate the text from {source_lang} to {target_lang}. "
+                        f"Maintain the exact structure and format of the input. "
+                        f"Don't change numbers, product codes, or measurements. "
+                        f"Translate only text content, maintaining item numbers if present.")
+    
+    def make_api_call():
+        res = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ]
+            },
+            timeout=60
+        )
+        res.raise_for_status()
+        return res.json()
+    
+    result = retry_api_call(make_api_call)
+    return result["choices"][0]["message"]["content"]
+
+def translate_structured_csv_data(df, source_lang, target_lang, model, api_key, preserve_headers=True, maintain_numbers=True):
+    """
+    Dwuetapowe tłumaczenie danych CSV:
+    1. Tłumaczenie nagłówków
+    2. Tłumaczenie zawartości kolumn tekstowych
+    """
+    st.info("Przygotowywanie danych do tłumaczenia...")
+    result_df = df.copy()
+    
+    # Zapisz oryginalne nagłówki
+    original_headers = list(df.columns)
+    
+    # Krok 1: Tłumaczenie nagłówków jeśli potrzeba
+    if not preserve_headers:
+        headers_to_translate = []
+        for header in original_headers:
+            if not is_numeric_value(header) and not is_product_code(header):
+                headers_to_translate.append(header)
+        
+        if headers_to_translate:
+            st.info("Tłumaczenie nagłówków...")
+            # Tworzenie specjalnego formatu dla nagłówków
+            headers_prompt = "TRANSLATE THESE COLUMN HEADERS:\n"
+            for i, header in enumerate(headers_to_translate):
+                headers_prompt += f"{i+1}. {header}\n"
+            
+            headers_response = call_translation_api(headers_prompt, source_lang, target_lang, model, api_key)
+            
+            # Parsowanie odpowiedzi
+            translated_headers = []
+            for line in headers_response.split('\n'):
+                line = line.strip()
+                if line:
+                    # Próbuj dopasować "numer. tłumaczenie"
+                    match = re.match(r'^(\d+)\.\s+(.+)$', line)
+                    if match:
+                        idx, translated = int(match.group(1)) - 1, match.group(2)
+                        if 0 <= idx < len(headers_to_translate):
+                            translated_headers.append((headers_to_translate[idx], translated))
+                    elif len(translated_headers) < len(headers_to_translate):
+                        # Jeśli nie udało się dopasować wzorca, dodaj jako jest
+                        translated_headers.append((headers_to_translate[len(translated_headers)], line))
+            
+            # Zastosuj tłumaczenia nagłówków
+            header_map = {orig: trans for orig, trans in translated_headers}
+            new_headers = [header_map.get(h, h) for h in original_headers]
+            result_df.columns = new_headers
+
+    # Krok 2: Identyfikacja kolumn tekstowych do tłumaczenia
+    text_columns = []
+    for col in original_headers:
+        # Sprawdź, czy kolumna zawiera wartości tekstowe (niebędące liczbami/kodami)
+        sample_values = df[col].dropna().astype(str).unique()[:20]
+        if any(not is_numeric_value(val) and not is_product_code(val) and str(val).strip() for val in sample_values):
+            text_columns.append(col)
+    
+    # Krok 3: Tłumaczenie zawartości kolumn tekstowych
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    for col_idx, col in enumerate(text_columns):
+        status_text.text(f"Tłumaczenie kolumny {col_idx+1}/{len(text_columns)}: {col}")
+        
+        # Pobierz wszystkie unikalne wartości tekstowe z kolumny
+        unique_values = {}
+        for idx, val in df[col].items():
+            if pd.notna(val) and not is_numeric_value(val) and not is_product_code(val) and str(val).strip():
+                val_str = str(val).strip()
+                if val_str not in unique_values:
+                    unique_values[val_str] = []
+                unique_values[val_str].append(idx)
+        
+        # Jeśli są wartości do tłumaczenia
+        if unique_values:
+            values_list = list(unique_values.keys())
+            
+            # Tworzymy strukturyzowany prompt
+            values_prompt = f"TRANSLATE THE FOLLOWING VALUES FROM COLUMN '{col}':\n"
+            for i, val in enumerate(values_list):
+                values_prompt += f"{i+1}. {val}\n"
+            
+            # Dodaj instrukcję o zachowaniu numeracji
+            values_prompt += "\nKeep the same numbering format in your response. Report each translated item with its number."
+            
+            # Wywołaj API tłumaczenia
+            values_response = call_translation_api(values_prompt, source_lang, target_lang, model, api_key)
+            
+            # Parsowanie odpowiedzi z zachowaniem numeracji
+            value_translations = {}
+            response_lines = values_response.split("\n")
+            
+            for line in response_lines:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # Dopasuj wzorzec "numer. tłumaczenie"
+                match = re.match(r'^(\d+)\.\s+(.+)$', line)
+                if match:
+                    idx, translated = int(match.group(1)) - 1, match.group(2)
+                    if 0 <= idx < len(values_list):
+                        original = values_list[idx]
+                        value_translations[original] = translated
+            
+            # Jeśli parsowanie się nie powiodło, spróbuj prostego podejścia
+            if not value_translations and len(response_lines) == len(values_list):
+                for i, line in enumerate(response_lines):
+                    if i < len(values_list):
+                        value_translations[values_list[i]] = line.strip()
+            
+            # Zastosuj tłumaczenia do DataFrame
+            col_in_result = col
+            if not preserve_headers and col in header_map:
+                col_in_result = header_map[col]
+                
+            for original, indices in unique_values.items():
+                if original in value_translations:
+                    for idx in indices:
+                        result_df.at[idx, col_in_result] = value_translations[original]
+        
+        # Aktualizuj pasek postępu
+        progress_bar.progress((col_idx + 1) / len(text_columns))
+    
+    status_text.text("Tłumaczenie zakończone!")
+    return result_df
+
+def validate_translation_results(original_df, translated_df):
+    """
+    Sprawdza poprawność tłumaczenia i naprawia problemy:
+    1. Sprawdza strukturę
+    2. Weryfikuje, że wartości liczbowe i kody nie są zmienione
+    3. Sprawdza czy nie ma pustych tłumaczeń
+    """
+    st.info("Walidacja i naprawa tłumaczenia...")
+    
+    # Sprawdź strukturę
+    if original_df.shape != translated_df.shape:
+        st.warning(f"Niezgodna struktura: oryginał {original_df.shape}, tłumaczenie {translated_df.shape}")
+        return translated_df  # Trudno naprawić różną strukturę
+
+    # Przygotuj mapę oryginalnych do przetłumaczonych kolumn
+    original_cols = list(original_df.columns)
+    translated_cols = list(translated_df.columns)
+    
+    # Sprawdź wartości liczbowe i kody
+    for i, col_orig in enumerate(original_cols):
+        col_trans = translated_cols[i]
+        
+        for idx in original_df.index:
+            orig_val = original_df.at[idx, col_orig]
+            
+            # Sprawdź wartości liczbowe i kody produktów
+            if pd.notna(orig_val) and (is_numeric_value(orig_val) or is_product_code(orig_val)):
+                trans_val = translated_df.at[idx, col_trans]
+                
+                # Jeśli wartość została zmieniona, przywróć oryginalną
+                if str(orig_val).strip() != str(trans_val).strip():
+                    translated_df.at[idx, col_trans] = orig_val
+            
+            # Sprawdź puste tłumaczenia
+            elif pd.notna(orig_val) and str(orig_val).strip():
+                trans_val = translated_df.at[idx, col_trans]
+                if pd.isna(trans_val) or not str(trans_val).strip():
+                    translated_df.at[idx, col_trans] = orig_val
+
+    return translated_df
+
+def write_csv_with_original_format(df, original_df, output_path, encoding='utf-8'):
+    """Zapisuje DataFrame do CSV z zachowaniem formatu i separatorów z oryginalnego pliku"""
+    # Określ separator na podstawie oryginalnego pliku
+    with open(output_path, 'w', encoding=encoding) as f:
+        # Zapisz nagłówki
+        f.write(','.join([str(col) for col in df.columns]) + '\n')
+        
+        # Zapisz wiersze
+        for idx in df.index:
+            row_values = []
+            for col_idx, col in enumerate(df.columns):
+                val = df.at[idx, col]
+                
+                # Zachowaj oryginalny format liczb, jeśli to możliwe
+                if pd.notna(val):
+                    if col_idx < len(original_df.columns):
+                        orig_col = original_df.columns[col_idx]
+                        if idx in original_df.index:
+                            orig_val = original_df.at[idx, orig_col]
+                            # Jeśli mamy taką samą liczbę ale w innym formacie
+                            if is_numeric_value(val) and is_numeric_value(orig_val):
+                                if ',' in str(orig_val) and '.' in str(val):
+                                    val = str(val).replace('.', ',')
+                                elif '.' in str(orig_val) and ',' in str(val):
+                                    val = str(val).replace(',', '.')
+                
+                # Dodaj cudzysłowy, jeśli zawiera przecinki
+                if isinstance(val, str) and (',' in val or '"' in val or '\n' in val):
+                    val = f'"{val.replace('"', '""')}"'
+                
+                row_values.append(str(val) if pd.notna(val) else '')
+            
+            f.write(','.join(row_values) + '\n')
+
+@st.cache_data(ttl=3600)
+def parse_csv_with_encoding_fallback(raw_bytes):
+    encodings = ['utf-8', 'iso-8859-1', 'iso-8859-2', 'windows-1250']
+    for enc in encodings:
+        try:
+            return pd.read_csv(io.BytesIO(raw_bytes), encoding=enc), enc
+        except UnicodeDecodeError:
+            continue
+    st.error("Nie udało się rozpoznać kodowania pliku CSV")
+    raise ValueError("Nieobsługiwane kodowanie pliku")
+
+@st.cache_data(ttl=3600)
+def parse_csv_with_separator_fallback(raw_bytes, encoding):
+    for sep in [',', ';', '\t']:
+        try:
+            df = pd.read_csv(io.BytesIO(raw_bytes), encoding=encoding, sep=sep)
+            if len(df.columns) > 1:  # Sprawdź czy format ma sens
+                return df, sep
+        except Exception:
+            continue
+    
+    # Ostatnia próba z automatycznym wykrywaniem separatora
+    try:
+        df = pd.read_csv(io.BytesIO(raw_bytes), encoding=encoding, sep=None, engine='python')
+        return df, ','  # Zakładamy przecinek jako domyślny separator
+    except Exception as e:
+        st.error(f"Nie udało się odczytać pliku CSV: {e}")
+        raise
+
+@st.cache_data(ttl=3600)
+def parse_excel_file(raw_bytes):
+    """Parsowanie pliku Excel z cache'owaniem"""
+    return pd.read_excel(io.BytesIO(raw_bytes))
+
+@st.cache_data(ttl=3600)
+def parse_doc_file(raw_bytes):
+    """Parsowanie pliku DOC/DOCX z cache'owaniem"""
+    doc = Document(io.BytesIO(raw_bytes))
+    lines = [p.text for p in doc.paragraphs if p.text.strip()]
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                if cell.text.strip():
+                    lines.append(cell.text.strip())
+    return doc, lines
+
 def translate_chunks_with_progress(chunks, source_lang, target_lang, model, api_key):
     """Wersja funkcji translate_chunks z paskiem postępu"""
     translated_pairs = []
@@ -310,138 +600,6 @@ def translate_chunks_with_progress(chunks, source_lang, target_lang, model, api_
     translated_pairs.sort()
     return translated_pairs
 
-@st.cache_data(ttl=3600)
-def parse_csv_with_encoding_fallback(raw_bytes):
-    encodings = ['utf-8', 'iso-8859-1', 'iso-8859-2', 'windows-1250']
-    for enc in encodings:
-        try:
-            return pd.read_csv(io.BytesIO(raw_bytes), encoding=enc), enc
-        except UnicodeDecodeError:
-            continue
-    st.error("Nie udało się rozpoznać kodowania pliku CSV")
-    raise ValueError("Nieobsługiwane kodowanie pliku")
-
-@st.cache_data(ttl=3600)
-def parse_csv_with_separator_fallback(raw_bytes, encoding):
-    for sep in [',', ';', '\t']:
-        try:
-            df = pd.read_csv(io.BytesIO(raw_bytes), encoding=encoding, sep=sep)
-            if len(df.columns) > 1:  # Sprawdź czy format ma sens
-                return df
-        except Exception:
-            continue
-    
-    # Ostatnia próba z automatycznym wykrywaniem separatora
-    try:
-        return pd.read_csv(io.BytesIO(raw_bytes), encoding=encoding, sep=None, engine='python')
-    except Exception as e:
-        st.error(f"Nie udało się odczytać pliku CSV: {e}")
-        raise
-
-@st.cache_data(ttl=3600)
-def parse_excel_file(raw_bytes):
-    """Parsowanie pliku Excel z cache'owaniem"""
-    return pd.read_excel(io.BytesIO(raw_bytes))
-
-@st.cache_data(ttl=3600)
-def parse_doc_file(raw_bytes):
-    """Parsowanie pliku DOC/DOCX z cache'owaniem"""
-    doc = Document(io.BytesIO(raw_bytes))
-    lines = [p.text for p in doc.paragraphs if p.text.strip()]
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                if cell.text.strip():
-                    lines.append(cell.text.strip())
-    return doc, lines
-
-def validate_translation(original_df, translated_df):
-    """
-    Sprawdza integralność tłumaczenia
-    """
-    validation_errors = []
-    
-    # Sprawdź czy zachowano strukturę
-    if original_df.shape != translated_df.shape:
-        validation_errors.append(f"Niezgodna struktura: oryginał {original_df.shape}, tłumaczenie {translated_df.shape}")
-    
-    # Sprawdź czy wszystkie komórki zawierające liczby zachowały swój typ
-    for col in original_df.columns:
-        for idx, val in original_df[col].items():
-            if pd.notna(val) and is_numeric_value(val):
-                trans_val = translated_df.at[idx, col]
-                if not is_numeric_value(trans_val):
-                    validation_errors.append(f"Utrata formatu liczbowego w komórce [{idx}, {col}]: {val} -> {trans_val}")
-    
-    # Sprawdź czy nie ma pustych tłumaczeń dla niepustych oryginalnych komórek
-    for col in original_df.columns:
-        for idx, val in original_df[col].items():
-            if pd.notna(val) and str(val).strip() and not is_numeric_value(val):
-                trans_val = translated_df.at[idx, col]
-                if pd.isna(trans_val) or not str(trans_val).strip():
-                    validation_errors.append(f"Pusta wartość tłumaczenia dla [{idx}, {col}]: {val}")
-    
-    return validation_errors
-
-def translate_tabular_file(df, source_lang, target_lang, model, api_key, preserve_headers=True, maintain_numbers=True):
-    # Przygotuj listę tekstów do tłumaczenia
-    texts_to_translate = []
-    cell_indices = []
-    
-    # Przygotuj do tłumaczenia tylko dane, bez nagłówków jeśli preserve_headers=True
-    headers = list(df.columns)
-    
-    if not preserve_headers:
-        for header in headers:
-            texts_to_translate.append(header)
-            cell_indices.append(("header", header))
-        
-    # Zbierz wszystkie komórki zawierające tekst
-    for col in df.columns:
-        for row_idx, val in df[col].items():
-            if pd.notna(val) and str(val).strip():
-                val_str = str(val).strip()
-                # Sprawdź czy to nie jest liczba lub wartość specjalna
-                if not is_numeric_value(val) or not maintain_numbers:
-                    texts_to_translate.append(val_str)
-                    cell_indices.append(("cell", (col, row_idx)))
-    
-    # Tłumacz zebrane teksty
-    if texts_to_translate:
-        # Wykryj język źródłowy, jeśli ustawiony na auto
-        if source_lang == "auto":
-            detected_lang = detect_source_language(texts_to_translate)
-            st.session_state.detected_lang = detected_lang
-            st.info(f"Wykryto język źródłowy: {detected_lang}")
-        else:
-            detected_lang = source_lang
-            
-        chunks = chunk_lines(texts_to_translate, model_name="gpt-4")
-        translated_pairs = translate_chunks_with_progress(chunks, detected_lang, target_lang, model, api_key)
-        
-        # Zastosuj tłumaczenia
-        translated_df = df.copy()
-        
-        # Indeks dla śledzenia, które tłumaczenie używamy
-        trans_idx = 0
-        
-        # Zastosuj tłumaczenia nagłówków, jeśli potrzeba
-        if not preserve_headers:
-            for i, header in enumerate(headers):
-                translated_df.rename(columns={header: translated_pairs[trans_idx][1]}, inplace=True)
-                trans_idx += 1
-                
-        # Zastosuj tłumaczenia komórek
-        for i, (cell_type, identifier) in enumerate(cell_indices[0 if preserve_headers else len(headers):]):
-            if cell_type == "cell":
-                col, row_idx = identifier
-                translated_df.at[row_idx, col] = translated_pairs[trans_idx][1]
-                trans_idx += 1
-            
-        return translated_df
-    else:
-        return df.copy()
-
 def handle_file_upload():
     """Obsługa przesłania pliku z zarządzaniem stanem"""
     uploaded_file = st.file_uploader("Wgraj plik do przetłumaczenia", type=SUPPORTED_FILE_TYPES)
@@ -455,6 +613,8 @@ def handle_file_upload():
             st.session_state.translation_done = False
             st.session_state.translation_in_progress = False
             st.session_state.output_bytes = None
+            st.session_state.original_df = None
+            st.session_state.translated_df = None
             
         return True
     else:
@@ -465,6 +625,9 @@ def handle_file_upload():
         st.session_state.raw_bytes = None
         st.session_state.translation_done = False
         st.session_state.translation_in_progress = False
+        st.session_state.output_bytes = None
+        st.session_state.original_df = None
+        st.session_state.translated_df = None
         
         return False
 
@@ -495,21 +658,24 @@ def process_file():
             
         elif file_type == "csv":
             df, encoding = parse_csv_with_encoding_fallback(raw_bytes)
-            df = parse_csv_with_separator_fallback(raw_bytes, encoding)
+            df, separator = parse_csv_with_separator_fallback(raw_bytes, encoding)
             
             # Zapisz dane w stanie sesji
             st.session_state.csv_encoding = encoding
+            st.session_state.csv_separator = separator
             st.session_state.original_df = df
             
             # Przygotowanie do estymacji kosztów
             texts_to_translate = []
             
             if not st.session_state.get("preserve_headers", True):
-                texts_to_translate.extend(df.columns)
+                for col in df.columns:
+                    if not is_numeric_value(col) and not is_product_code(col):
+                        texts_to_translate.append(str(col))
                 
             for col in df.columns:
                 for _, val in df[col].items():
-                    if pd.notna(val) and not is_numeric_value(val):
+                    if pd.notna(val) and not is_numeric_value(val) and not is_product_code(val) and str(val).strip():
                         texts_to_translate.append(str(val))
                 
             return texts_to_translate
@@ -524,11 +690,13 @@ def process_file():
             texts_to_translate = []
             
             if not st.session_state.get("preserve_headers", True):
-                texts_to_translate.extend(df.columns)
+                for col in df.columns:
+                    if not is_numeric_value(col) and not is_product_code(col):
+                        texts_to_translate.append(str(col))
                 
             for col in df.columns:
                 for _, val in df[col].items():
-                    if pd.notna(val) and not is_numeric_value(val):
+                    if pd.notna(val) and not is_numeric_value(val) and not is_product_code(val) and str(val).strip():
                         texts_to_translate.append(str(val))
                 
             return texts_to_translate
@@ -546,6 +714,7 @@ def process_file():
     
     except Exception as e:
         st.error(f"Błąd podczas przetwarzania pliku: {e}")
+        st.exception(e)
         return None
 
 def save_translation_to_file(output_path, file_type):
@@ -556,7 +725,9 @@ def save_translation_to_file(output_path, file_type):
     
     elif file_type in ["csv"]:
         translated_df = st.session_state.translated_df
-        translated_df.to_csv(output_path, index=False, encoding="utf-8")
+        original_df = st.session_state.original_df
+        encoding = st.session_state.csv_encoding
+        write_csv_with_original_format(translated_df, original_df, output_path, encoding)
         
     elif file_type in ["xls", "xlsx"]:
         translated_df = st.session_state.translated_df
@@ -588,7 +759,7 @@ def save_to_google_drive(output_path, file_type):
 def start_translation():
     """Rozpocznij proces tłumaczenia"""
     st.session_state.translation_in_progress = True
-    
+
 def handle_translation():
     """Obsługa procesu tłumaczenia"""
     file_type = st.session_state.file_type
@@ -598,17 +769,24 @@ def handle_translation():
             # Tłumaczenie dla plików tabelarycznych
             df = st.session_state.original_df
             source_lang = st.session_state.source_lang
+            if source_lang == "auto" and st.session_state.detected_lang:
+                source_lang = st.session_state.detected_lang
+                
             target_lang = st.session_state.target_lang
             model = st.session_state.model
             api_key = st.secrets["OPENROUTER_API_KEY"]
             preserve_headers = st.session_state.get("preserve_headers", True)
             maintain_numbers = st.session_state.get("maintain_numbers", True)
             
-            translated_df = translate_tabular_file(
+            # Tłumaczenie tabeli
+            translated_df = translate_structured_csv_data(
                 df, source_lang, target_lang, model, api_key, 
                 preserve_headers=preserve_headers,
                 maintain_numbers=maintain_numbers
             )
+            
+            # Walidacja i naprawa problemów
+            translated_df = validate_translation_results(df, translated_df)
             
             # Zapisz wynik w stanie sesji
             st.session_state.translated_df = translated_df
@@ -677,8 +855,8 @@ def handle_translation():
             
     except Exception as e:
         st.error(f"Błąd podczas tłumaczenia: {e}")
+        st.exception(e)
         st.session_state.translation_in_progress = False
-        traceback.print_exc()
 
 def run_streamlit_app():
     # Inicjalizacja stanu sesji
@@ -763,7 +941,9 @@ def run_streamlit_app():
     # Tłumaczenie w trakcie
     if st.session_state.translation_in_progress:
         handle_translation()
-        # Unikaj rerun aby nie zresetować widoku
+        # Po zakończeniu tłumaczenia, odśwież interfejs
+        if st.session_state.translation_done:
+            st.rerun()
     
     # Wynik tłumaczenia
     if st.session_state.translation_done:
@@ -771,17 +951,6 @@ def run_streamlit_app():
         
         # Wyświetl przykładowe dane dla plików tabelarycznych
         if st.session_state.file_type in ["csv", "xls", "xlsx"]:
-            # Walidacja rezultatu
-            validation_errors = validate_translation(
-                st.session_state.original_df, 
-                st.session_state.translated_df
-            )
-            
-            if validation_errors:
-                st.warning("Wykryto potencjalne problemy z tłumaczeniem:")
-                for error in validation_errors[:10]:  # Pokaż maksymalnie 10 błędów
-                    st.write(f"- {error}")
-            
             # Porównanie oryginału i tłumaczenia
             col1, col2 = st.columns(2)
             with col1:
