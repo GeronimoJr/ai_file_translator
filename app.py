@@ -11,7 +11,7 @@ from pydrive2.drive import GoogleDrive
 from oauth2client.service_account import ServiceAccountCredentials
 import pandas as pd
 import io
-import docx
+from docx import Document
 
 st.set_page_config(page_title="Tłumacz plików AI", layout="centered")
 st.title("AI Tłumacz plików CSV, XML, Excel i Word")
@@ -71,7 +71,7 @@ if uploaded_file and api_key and target_lang:
             elif file_type == "xml":
                 content = raw_bytes.decode("utf-8")
             elif file_type in ["doc", "docx"]:
-                doc = docx.Document(io.BytesIO(raw_bytes))
+                doc = Document(io.BytesIO(raw_bytes))
                 content = "\n".join([p.text for p in doc.paragraphs])
             else:
                 st.error("Nieobsługiwany typ pliku.")
@@ -107,7 +107,7 @@ if uploaded_file and api_key and target_lang:
                     with open(output_path, "w", encoding="utf-8") as f:
                         f.write(translated)
                 elif file_type in ["doc", "docx"]:
-                    new_doc = docx.Document()
+                    new_doc = Document()
                     for line in translated.splitlines():
                         new_doc.add_paragraph(line)
                     new_doc.save(output_path)
